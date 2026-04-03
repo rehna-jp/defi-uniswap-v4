@@ -45,10 +45,79 @@ contract Swap is IUnlockCallback {
         returns (bytes memory)
     {
         // Write your code here
+         (address msgSender, SwapExactInputSingleHop memory params) =
+            abi.decode(data, (address, SwapExactInputSingleHop));
+
+        // Execute the swap against the PoolManager
+        int256 d = poolManager.swap({
+            key: params.poolKey,
+            params: SwapParams({
+                zeroForOne: params.zeroForOne,
+                amountSpecified: -(params.amountIn.toInt256()),
+                sqrtPriceLimitX96: params.zeroForOne
+                    ? MIN_SQRT_PRICE + 1
+                    : MAX_SQRT_PRICE - 1
+            }),
+            hookData: ""
+        });
+
+        BalanceDelta delta = BalanceDelta.wrap(d);
+        int128 amount0 = delta.amount0();
+        int128 amount1 = delta.amount1();
+
+        (
+            address currencyIn,
+            address currencyOut,
+            uint256 amountIn,
+            uint256 amountOut
+        ) = params.zeroForOne
+            ? (
+                params.poolKey.currency0,
+                params.poolKey.currency1,
+                (-amount0).toUint256(), // amount0 is negative (we owe it)
+                amount1.toUint256()     // amount1 is positive (we receive it)
+            )
+            : (
+                params.poolKey.currency1,
+                params.poolKey.currency0,
+                (-amount1).toUint256(),
+                amount0.toUint256()
+            );
+        
+        require(amountOut >= params.amountOutMin, "amount out < min");
+
+        // Send the output tokens directly to the original caller
+        poolManager.take({
+            currency: currencyOut,
+            to: msgSender,
+            amount: amountOut
+        });
+
+        // Settle the input side (pay the PoolManager what we owe)
+        poolManager.sync(currencyIn);
+        if (currencyIn == address(0)) {
+            // ETH path
+            poolManager.settle{value: amountIn}();
+        } else {
+            // ERC-20 path
+            IERC20(currencyIn).transfer(address(poolManager), amountIn);
+            poolManager.settle();
+        }
         return "";
     }
 
     function swap(SwapExactInputSingleHop calldata params) external payable {
         // Write your code here
+        address currencyIn = params.zeroForOne
+            ? params.poolKey.currency0
+            : params.poolKey.currency1;
+
+        currencyIn.transferIn(msg.sender, uint256(params.amountIn));
+        poolManager.unlock(abi.encode(msg.sender, params));
+        
+        uint256 bal = currencyIn.balanceOf(address(this));
+        if (bal > 0){
+            currencyIn.transferOut(msg.sender, bal);
+        }
     }
 }
