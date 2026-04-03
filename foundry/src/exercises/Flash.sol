@@ -36,6 +36,16 @@ contract Flash is IUnlockCallback {
         (address currency,uint256 amount)= abi.decode(data, (address, uint256));
         poolManager.take({currency: currency, to: address(this), amount: amount});
         (bool ok,) = tester.call("");
+        poolManager.sync(currency);          // tell PoolManager to snapshot its balance
+
+        if (currency == address(0)) {
+            // Native ETH repayment: send value with settle()
+            poolManager.settle{value: amount}();
+        } else {
+            // ERC-20 repayment: transfer tokens first, then call settle()
+            IERC20(currency).transfer(address(poolManager), amount);
+            poolManager.settle();
+        }
         return "";
     }
 
@@ -43,6 +53,5 @@ contract Flash is IUnlockCallback {
         // Write your code here
         poolManager.unlock(abi.encode(currency,amount));
         
-
     }
 }
